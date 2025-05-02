@@ -170,6 +170,72 @@ Malformed input aborts with a clear message.
 
 ---
 
+## 9 · Appendix · What the `sqrt3` demo is for 🧐
+*A tiny “hello-MPI” benchmark shipped with the course starter kit.*
+
+The goal is **not** to solve anything useful; `sqrt3` simply burns CPU in a
+predictable way so you can:
+
+1. Verify that your MPI tool-chain (`mpicc`, `mpirun`) works.  
+2. Check oversubscription behaviour and per-core throughput on different
+   machines.  
+3. Have a safe sandbox to tweak compilation flags or profiling tools without
+   touching the real TSP solver.
+
+When you run
+
+```bash
+mpirun --oversubscribe -np 24 ./sqrt3
+````
+
+each MPI rank executes a very long floating-point loop that repeatedly
+approximates √3, purely to burn CPU.  At the end it calls `MPI_Wtime()` and
+prints:
+
+```
+elapsed time for proc <rank> : <seconds>
+```
+
+Example:
+
+```
+elapsed time for proc 11: 19.423469
+elapsed time for proc  7: 19.399574
+…
+elapsed time for proc  3: 19.422991
+```
+
+### Why all times ≈ 19 s?
+
+* You launched **24 ranks** but your laptop almost certainly has **fewer than
+  24 hardware cores**.
+* The `--oversubscribe` flag tells Open MPI to time-share the CPU, so each
+  rank only gets a slice → the wall-time stretches to \~19 s.
+
+Run with a rank count that matches your physical cores and the numbers fall
+dramatically (e.g. 6–8 s on an 8-core machine):
+
+```bash
+mpirun -np 8 ./sqrt3
+```
+
+### How to read the output
+
+| What to look for              | Interpretation                                                    |
+| ----------------------------- | ----------------------------------------------------------------- |
+| **All ranks within a few ms** | Good – perfectly balanced toy workload.                           |
+| **One rank much slower**      | The OS throttled / migrated that process or the machine was busy. |
+| **Times > course reference**  | You’re oversubscribed or compiled without `-O3`.                  |
+
+This program is *only* a sanity check; your real performance exploration
+happens with `wsp-mpi`.  Still, `sqrt3` is handy for:
+
+* **Verifying** your MPI install & `mpirun` flags before running bigger jobs.
+* **Measuring** raw per-core throughput differences between laptop and cluster nodes.
+* **Profiling sandbox** – edit `sqrt3.c` freely; nothing in the main solver depends on it.
+
+
+---
 ## License
 
 MIT — use, hack, share.
