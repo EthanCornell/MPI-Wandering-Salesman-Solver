@@ -1,66 +1,122 @@
+
 # ✈️ MPI Travelling-Salesman Solver
 
-> **Author:** I-Hsuan(Ethan) Huang
-> **Focus:** Parallel search · MPI · branch-and-bound
-> **Fun fact:** Beats the serial reference by **7.7 ×** on an 8-core laptop.
+> **Author:** I-Hsuan (Ethan) Huang  
+> **Tech:** C · MPI · branch-and-bound search  
+> **Fun fact:** Beats the serial baseline by **7.7 ×** on an 8-core M1 Pro.
 
 ---
 
-## Why does this repo exist?
+## 0 · Project goals
 
-I wanted a **weekend playground** that checks three boxes at once:
-
-1. Refresh raw MPI muscle-memory (no fancy runtimes, pure `mpirun`).
-2. Explore branch-and-bound tricks in a scope small enough to finish.
-3. Benchmark a consumer laptop against a university cluster.
-
-So I rewrote my old coursework prototype from scratch and packaged it as a
-stand-alone project that anyone can clone, build, and run in ≤ 2 minutes.
+* **Refresh** raw MPI skills (no fancy runtimes; just `mpirun`).  
+* **Experiment** with pruning heuristics in a bite-size ≤ 18-city space.  
+* **Benchmark** laptop vs. campus cluster in under five minutes.
 
 ---
 
-## Directory tour
+## 1 · Directory tour
 
-| Path                           | What you’ll find                                                                                 |
-| ------------------------------ | ------------------------------------------------------------------------------------------------ |
-| **`wsp-mpi.c`**                | 350-line, header-only MPI solver — heavily commented.                                            |
-| **`input/`**                   | A few 16/17/18-city distance matrices (square **and** triangular).                               |
-| **`submitjob.py`**             | Tiny Python 3 helper: generates a PBS script for clusters that speak `qsub` (e.g. CMU Latedays). |
-| **`Makefile`**                 | One-liner: `mpicc -O3 -std=c11 -Wall -Wextra -march=native`.                                     |
-| **`.github/workflows/ci.yml`** | Smoke-test on Ubuntu 22.04 in ≈10 s.                                                             |
+| Path | What you’ll find |
+|------|------------------|
+| **`wsp-mpi.c`** | 350-line single-file solver (extensively commented). |
+| **`run_job.sh`** | Smart wrapper – runs locally **or** submits via `qsub` when PBS is available. |
+| **`submitjob.py`** | Generates PBS scripts programmatically (used in coursework). |
+| **`input/`** | Distance files (`dist16/17/18`, triangular & square). |
+| **`sqrt3/`** | Tiny demo app from the course hand-out (left unchanged). |
+| **`Makefile`** | One-target build (`wsp-mpi`) with `-O3 -Wall -Wextra`. |
+| **`.github/workflows/ci.yml`** | Smoke test on Ubuntu 22.04. |
 
 ---
 
-## Quick start
+## 2 · Building & running (`wsp-mpi`)
+
+### 2.1 Build
 
 ```bash
-# build
-make                       # → ./wsp-mpi
+make            # produces ./wsp-mpi
+````
 
-# run locally with 4 ranks (oversubscribe if you have <4 cores)
-mpirun --oversubscribe -np 4 ./wsp-mpi input/dist17
-```
-
-Example output:
+### 2.2 Command-line interface
 
 ```
-Optimal tour cost: 2085   time: 0.04 s   ranks: 8
+./wsp-mpi <distance-file>
+```
+
+*Exactly one argument* – the path to a square **or** upper-triangular matrix.
+
+### 2.3 Local run examples
+
+```bash
+# 4 ranks on a 4-core laptop
+mpirun -np 4 ./wsp-mpi input/dist17
+
+# 24 ranks on an 8-core laptop (time-sharing each core)
+mpirun --oversubscribe -np 24 ./wsp-mpi input/alt-dist18
+```
+
+Typical output:
+
+```
+Optimal tour cost: 2085   time: 0.041 s   ranks: 8
+```
+
+| Field                 | Meaning                           |
+| --------------------- | --------------------------------- |
+| **Optimal tour cost** | Minimum path length found.        |
+| **time**              | Wall-clock seconds (`MPI_Wtime`). |
+| **ranks**             | MPI processes used (`-np`).       |
+
+---
+
+## 3 · Helper scripts – usage cheatsheet
+
+| Script             | Purpose                                                                                                    | Example                                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| **`run_job.sh`**   | One-liner wrapper that <br>• runs `mpirun` locally **or** <br>• submits a PBS job via `qsub` if available. | `./run_job.sh 2 12 tsp.2x12.log` <br>*(2 nodes × 12 ranks each, log → file)*     |
+| **`submitjob.py`** | Generates a PBS script and (optionally) calls `qsub`.                                                      | `python3 submitjob.py  -p 24  -a "input/dist18"`<br>*(24 ranks, default 1 node)* |
+
+### 3.1 `run_job.sh` arguments
+
+```
+./run_job.sh <nodes 1-4> <ppn 1-24> <stdout-file>
+```
+
+* If `qsub` **exists** → submits `latedays.qsub` with the requested resources.
+* Else → executes `mpirun -np <nodes·ppn>` locally and writes combined stdout/stderr to `<stdout-file>`.
+
+### 3.2 `submitjob.py` flags (Python 3)
+
+| Flag       | Meaning                                              | Default    |
+| ---------- | ---------------------------------------------------- | ---------- |
+| `-J`       | *Just* generate the script (skip submission)         | off        |
+| `-p N`     | Total MPI ranks (`mpirun -np N`)                     | 1          |
+| `-a "ARG"` | Argument string for program (e.g., `"input/dist17"`) | ""         |
+| `-s NAME`  | Root name of the script file                         | `latedays` |
+| `-d N`     | Digits for random suffix                             | 4          |
+
+Example that only **generates** a script:
+
+```bash
+python3 submitjob.py -J -p 32 -a "input/dist18"
+# → latedays-1234.sh  (inspect; run qsub manually if desired)
 ```
 
 ---
 
-## Input formats (both accepted)
+## 4 · Input file formats (auto-detected)
 
-### 1 · Square matrix
+### Square (full) matrix
 
 ```
 N
 d00 d01 … d0N
+d10 d11 … d1N
 …
 dN0 …      dNN
 ```
 
-### 2 · Upper-triangular symmetric
+### Symmetric upper-triangular
 
 ```
 N
@@ -70,79 +126,60 @@ d20 d21
 dN0 dN1 … dN,N-1
 ```
 
-The loader auto-detects which style it reads.
+Malformed input aborts with a clear message.
 
 ---
 
-## Design cheatsheet
+## 5 · Performance snapshot
 
-| Piece              | Detail                                                                                             |
-| ------------------ | -------------------------------------------------------------------------------------------------- |
-| **Static seeding** | Rank 0 spawns one Task per *first hop* (`0 → i`).                                                  |
-| **DFS stack**      | Heap vector that doubles when full → no seg-faults on deep trees.                                  |
-| **Bound**          | `lower_bound` = cost so far + cheapest outgoing edge for every unvisited city (admissible, cheap). |
-| **Global best**    | `MPI_Allreduce(MIN)` every 10 k expansions.                                                        |
-| **Protocol**       | `TAG_REQ`,`TAG_WORK`,`TAG_NOWORK` — 0.5-round-trip work requests.                                  |
-| **I/O**            | Accepts both matrix styles; clear abort for malformed files.                                       |
-
----
-
-## Performance snapshot
-
-<sub>Apple M1 Pro (8P + 2E) · Open MPI 4.1.5</sub>
+<sub>M1 Pro 8P+2E · Open MPI 4.1.5</sub>
 
 | `dist17` | 1 rank | 2 ranks | 4 ranks |  8 ranks |
 | -------: | -----: | ------: | ------: | -------: |
 | Time (s) |   0.31 |    0.17 |    0.09 | **0.04** |
 | Speed-up |    1 × |   1.8 × |   3.3 × |    7.7 × |
 
-*Diminishing returns beyond 8 ranks — root of the tree becomes the bottleneck.*
+> After 8 ranks the upper tree levels saturate; extra ranks fight over crumbs.
 
 ---
 
-## Cluster usage (optional)
+## 6 · Interpreting results
 
-```bash
-# generate a PBS script but don't submit
-python3 submitjob.py -J -p 24 -a "input/dist18"
-
-# happy? then
-qsub latedays-XXXX.sh
-```
-
-*Requests one 24-core node, 30 min wall-time.*
+* **Cost sanity:** Check against `input/distances` or staff solutions.
+* **Timing sanity:** 17-city local run ≈0.05 s (–O3); cluster 24 cores ≈0.01 s.
+* **Scaling sanity:** Expect \~8 × on 24 cores; perfect linear is impossible.
 
 ---
 
-## Future ideas
+## 7 · Future work
 
-* **Smarter bound:** 1-tree / Held-Karp to shrink the search space \~10 ×.
-* **Peer work-stealing:** remove the single-point master bottleneck.
-* **Checkpointing:** per-worker stack dumps ⇒ resumable long runs.
-* **Hybrid GPU:** offload bound computation to CUDA/HIP for >18 cities.
+* Stronger 1-tree / MST bound (×5–10 pruning).
+* Peer work-stealing (remove master bottleneck).
+* Periodic checkpoint & resume.
+* Offload bound kernel to GPU.
 
 ---
 
-## Build & test matrix
+## 8 · CI matrix
 
-| OS           | Compiler | MPI   | Result  |
-| ------------ | -------- | ----- | ------- |
-| Ubuntu 22.04 | GCC 13   | 4.1.5 | ✔ smoke |
+| OS           | Compiler | MPI | Result  |
+| ------------ | -------- | --- | ------- |
+| Ubuntu 22.04 | GCC 13   | 4.1 | ✔ smoke |
 
-*(Add MPICH, Clang, macOS runners if you care.)*
+(Add MPICH / Clang / macOS runners if you fancy.)
 
 ---
 
 ## License
 
-MIT — do anything, just credit.
-Distance files © CMU (fair-use for educational samples).
+MIT — use, hack, share.
+Starter inputs © Carnegie Mellon University.
 
 ---
 
 ### Thanks
 
-* CMU for the original assignment idea + inputs.
-* Open MPI developers for an MPI that “just works” on laptops.
+* CMU 15-418/618 staff for the original assignment & inputs.
+* Open MPI devs for shipping a runtime that “just works”.
 
 Enjoy — and ping me if you squeeze more parallel juice out of it!
