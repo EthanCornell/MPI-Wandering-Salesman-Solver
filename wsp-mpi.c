@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------*
- * 15-418 / 15-618  —  Assignment 4  (Message-Passing WSP)
+ *  Message-Passing WSP
  *
  *  wsp-mpi.c  —  Branch-and-bound Travelling-Salesman solver
  *                using MPI across ≤ 18 cities.
