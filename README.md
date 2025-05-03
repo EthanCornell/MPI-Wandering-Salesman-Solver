@@ -2,14 +2,14 @@
 # ✈️ MPI Travelling-Salesman Solver
 
 > **Author:** I-Hsuan (Ethan) Huang  
-> **Tech:** C · MPI · branch-and-bound search  
+> **Tech:** C ·  MPI (message-passing model) · branch-and-bound search  
 > **Fun fact:** Beats the serial baseline by **7.7 ×** on an 8-core M1 Pro.
 
 ---
 
 ## 0 · Project goals
 
-* **Refresh** raw MPI skills (no fancy runtimes; just `mpirun`).  
+* **Refresh** raw MPI skills (pure message-passing; no shared memory).  
 * **Experiment** with pruning heuristics in a bite-size ≤ 18-city space.  
 * **Benchmark** laptop vs. campus cluster in under five minutes.
 
