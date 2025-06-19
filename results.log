@@ -1,0 +1,26 @@
+===============================================
+TSP Solver Local Run
+===============================================
+Command: mpirun -np 8 ./wsp-mpi_v4 input/dist18
+Requested: 1 nodes × 8 ppn = 8 ranks
+Program version: wsp-mpi_v4
+Input file: input/dist18
+Started: Wed Jun 18 21:36:02 EDT 2025
+Host: EthanWisc
+Working directory: /mnt/c/opt/TSPMP/MPI-Wandering-Salesman-Solver
+===============================================
+
+System cores: 16
+Executing: mpirun -np 8 ./wsp-mpi_v4 input/dist18
+
+Stable hybrid search: 8 ranks, 2-3 tasks per rank, 16 OpenMP threads per rank
+Optimal tour cost: 317   time: 2.062 s   ranks: 8
+Optimal path: 0 9 16 6 11 1 15 2 7 4 12 10 5 8 17 14 13 3 0 
+
+===============================================
+Local Run Statistics
+===============================================
+Wall time: 2.540907782 seconds
+Exit code: 0
+Completed: Wed Jun 18 21:36:05 EDT 2025
+===============================================

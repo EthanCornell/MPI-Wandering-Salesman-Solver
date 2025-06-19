@@ -1,20 +1,8 @@
 /*--------------------------------------------------------------------*
- *  Message-Passing WSP
+ *  Message-Passing WSP - FULLY CORRECTED VERSION - Way1 
  *
  *  wsp-mpi.c  —  Branch-and-bound Travelling-Salesman solver
  *                using MPI across ≤ 18 cities.
- *
- *  Build :   mpicc -O3 -std=c11 -Wall -Wextra -march=native -o wsp-mpi wsp-mpi.c
- *  Run  :    mpirun [--oversubscribe] -np <P> ./wsp-mpi input/dist17
- *
- *  The program accepts **either**:
- *      • full N × N distance matrices  (289 ints for N=17)
- *      • symmetric upper-triangular   (N·(N-1)/2 ints  = 153 for N=17)
- *
- *  Rank-0 seeds one task per “first hop” city and hands them
- *  out on demand.  Workers depth-first search their sub-tree
- *  with branch-and-bound.  Global best cost is synchronised
- *  every REDUCE_INTERVAL expansions using MPI_Allreduce().
  *--------------------------------------------------------------------*/
 
 #include <mpi.h>
@@ -24,17 +12,13 @@
 #include <limits.h>
 
 /* ---------- Tunables & limits -------------------------------------- */
-#define MAX_N            18      /* Assignment never exceeds 18 cities   */
+#define MAX_N            19      /* Assignment never exceeds 18 cities   */
 #define MAX_PATH         MAX_N   /* longest path prefix we store         */
-#define START_DEPTH       1      /* how deep to expand before seeding    */
-#define REDUCE_INTERVAL 10000    /* node-expansions between Allreduce    */
 
 /* ---------- MPI message tags  -------------------------------------- */
-enum { TAG_REQ = 1, TAG_WORK, TAG_NOWORK };
+enum { TAG_REQ = 1, TAG_WORK, TAG_NOWORK, TAG_COST = 10, TAG_PATH = 11 };
 
-/* ---------- Work unit ------------------------------------------------
- * A Task is the root of a search sub-tree.  We send it as a POD struct
- * (array of ints), so size must not exceed a few KB. */
+/* ---------- Work unit ------------------------------------------------ */
 typedef struct {
     int depth;           /* length of prefix -- includes city 0          */
     int cost;            /* cumulative cost of that prefix               */
@@ -42,6 +26,24 @@ typedef struct {
     int visitedMask;     /* bitmask: 1 << i => city i already visited     */
     int path[MAX_PATH];  /* explicit prefix so we can reconstruct tours   */
 } Task;
+
+/* Helper function to send Task safely */
+static void send_task(const Task *task, int dest) {
+    MPI_Send(&task->depth, 1, MPI_INT, dest, TAG_WORK, MPI_COMM_WORLD);
+    MPI_Send(&task->cost, 1, MPI_INT, dest, TAG_WORK, MPI_COMM_WORLD);
+    MPI_Send(&task->city, 1, MPI_INT, dest, TAG_WORK, MPI_COMM_WORLD);
+    MPI_Send(&task->visitedMask, 1, MPI_INT, dest, TAG_WORK, MPI_COMM_WORLD);
+    MPI_Send(task->path, MAX_PATH, MPI_INT, dest, TAG_WORK, MPI_COMM_WORLD);
+}
+
+/* Helper function to receive Task safely */
+static void recv_task(Task *task, int source) {
+    MPI_Recv(&task->depth, 1, MPI_INT, source, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Recv(&task->cost, 1, MPI_INT, source, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Recv(&task->city, 1, MPI_INT, source, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Recv(&task->visitedMask, 1, MPI_INT, source, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Recv(task->path, MAX_PATH, MPI_INT, source, TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+}
 
 /* ---------- Globally-broadcast data -------------------------------- */
 static int  N;                        /* number of cities               */
@@ -58,9 +60,8 @@ typedef struct {
 } Node;
 
 /* --------------------------------------------------------------------
- *  lower_bound()  —  cheap admissible heuristic:
- *  For every unvisited city, add its cheapest outgoing edge.
- *  Ensures we never underestimate → safe pruning.                      */
+ *  lower_bound()  —  cheap admissible heuristic
+ */
 static inline int lower_bound(int cost, int mask)
 {
     int lb = cost;
@@ -69,30 +70,30 @@ static inline int lower_bound(int cost, int mask)
         int best = INT_MAX;
         for (int j = 0; j < N; ++j)
             if (i != j && dist[i][j] < best) best = dist[i][j];
-        lb += best;
+        if (best != INT_MAX) lb += best;
     }
     return lb;
 }
 
 /* --------------------------------------------------------------------
  *  dfs_from_task()  —  branch-and-bound search seeded by Task
- *  Uses an explicit stack to avoid recursion (faster & ASAN-friendly). */
-/* --------------------------------------------- dynamic DFS stack ---- */
-#define INIT_CAP (1 << 15)                 /* 32 768 Nodes (~2.8 MiB)   */
+ */
+#define INIT_CAP (1 << 15)
 
 static void dfs_from_task(const Task *t)
 {
-    size_t cap = INIT_CAP;                 /* current allocated slots   */
+    size_t cap = INIT_CAP;
     Node  *stk = malloc(cap * sizeof(Node));
-    size_t sp  = 0;
-    long   expansions = 0;                 /* 64-bit to avoid wrap      */
+    if (!stk) { perror("malloc"); MPI_Abort(MPI_COMM_WORLD, 1); }
+    
+    size_t sp = 0;
 
     /* push root node copied from the Task --------------------------- */
-    stk[sp++] = (Node){ t->city, t->depth, t->cost,
-                        t->visitedMask, {0} };
-    memcpy(stk[sp-1].path, t->path, t->depth * sizeof(int));
+    stk[sp] = (Node){ t->city, t->depth, t->cost, t->visitedMask, {0} };
+    memcpy(stk[sp].path, t->path, t->depth * sizeof(int));
+    sp++;
 
-    while (sp) {
+    while (sp > 0) {
         Node n = stk[--sp];
 
         /* --- prune -------------------------------------------------- */
@@ -106,7 +107,7 @@ static void dfs_from_task(const Task *t)
             if (tourCost < best_cost) {
                 best_cost = tourCost;
                 memcpy(best_path, n.path, N * sizeof(int));
-                best_path[N] = 0;
+                best_path[N] = 0;  /* return to start */
             }
             continue;
         }
@@ -118,70 +119,68 @@ static void dfs_from_task(const Task *t)
             if (newCost >= best_cost) continue;
 
             /* ensure space for the push ----------------------------- */
-            if (sp == cap) {
+            if (sp >= cap) {
                 cap *= 2;
                 stk = realloc(stk, cap * sizeof(Node));
                 if (!stk) { perror("realloc"); MPI_Abort(MPI_COMM_WORLD, 1); }
             }
-            Node c = n;
-            c.city = next;
-            c.cost = newCost;
-            c.visitedMask |= 1 << next;
-            c.path[c.depth] = next;
-            c.depth++;
-            stk[sp++] = c;
-        }
-
-        /* --- periodic global best sync ----------------------------- */
-        if (++expansions % REDUCE_INTERVAL == 0) {
-            int g;
-            MPI_Allreduce(&best_cost, &g, 1, MPI_INT,
-                          MPI_MIN, MPI_COMM_WORLD);
-            best_cost = g;
+            
+            /* Create child node */
+            stk[sp] = n;  /* copy parent */
+            stk[sp].city = next;
+            stk[sp].cost = newCost;
+            stk[sp].visitedMask |= (1 << next);
+            stk[sp].path[n.depth] = next;  /* Add next city to path */
+            stk[sp].depth = n.depth + 1;
+            sp++;
         }
     }
-    free(stk);                              /* tidy • avoids leaks      */
+    free(stk);
 }
 
-
 /* --------------------------------------------------------------------
- * wall_seconds()  —  portable high-res timer via MPI_Wtime()          */
-static inline double wall_seconds(void) { return MPI_Wtime(); }
-
-/* --------------------------------------------------------------------
- * master()  —  rank 0: keep a LIFO queue of Tasks and hand them out
- *              on demand until everyone reports no more work.         */
+ * master()  —  rank 0: distribute work and handle single-process case
+ */
 static void master(int world)
 {
-    Task queue[MAX_N];      /* at most N-1 seed tasks                 */
-    int  qsz = 0;           /* stack size                              */
+    Task queue[MAX_N];
+    int  qsz = 0;
 
     /* ---- seed: city 0 → i  for i = 1..N-1 ------------------------ */
     for (int i = 1; i < N; ++i) {
-        queue[qsz++] = (Task){
-            .depth       = 1 + START_DEPTH,
+        queue[qsz] = (Task){
+            .depth       = 2,                    /* path: 0 → i */
             .cost        = dist[0][i],
             .city        = i,
             .visitedMask = (1 << 0) | (1 << i),
             .path        = {0}
         };
-        queue[qsz - 1].path[0] = 0;
-        queue[qsz - 1].path[1] = i;
+        queue[qsz].path[0] = 0;
+        queue[qsz].path[1] = i;
+        qsz++;
     }
 
-    int done = 0;           /* workers that received TAG_NOWORK       */
+    /* If single process, master does all the work */
+    if (world == 1) {
+        for (int i = 0; i < qsz; i++) {
+            dfs_from_task(&queue[i]);
+        }
+        return;
+    }
+
+    /* Multi-process: distribute work */
+    int done = 0;
     MPI_Status st;
 
     while (done < world - 1) {
-        /* wait for a work request --------------------------------- */
-        MPI_Recv(NULL, 0, MPI_BYTE, MPI_ANY_SOURCE, TAG_REQ,
-                 MPI_COMM_WORLD, &st);
+        MPI_Recv(NULL, 0, MPI_BYTE, MPI_ANY_SOURCE, TAG_REQ, MPI_COMM_WORLD, &st);
         int dst = st.MPI_SOURCE;
 
-        if (qsz) {          /* still have tasks → send one ---------- */
-            MPI_Send(&queue[--qsz], sizeof(Task)/sizeof(int), MPI_INT,
-                     dst, TAG_WORK, MPI_COMM_WORLD);
-        } else {            /* queue empty → tell worker to exit ----- */
+        if (qsz > 0) {
+            /* Send work using safe helper function */
+            send_task(&queue[--qsz], dst);
+        } else {
+            /* No more work */
             MPI_Send(NULL, 0, MPI_BYTE, dst, TAG_NOWORK, MPI_COMM_WORLD);
             ++done;
         }
@@ -189,8 +188,8 @@ static void master(int world)
 }
 
 /* --------------------------------------------------------------------
- * worker()  —  non-zero ranks: request tasks, process DFS, repeat
- *              until master replies TAG_NOWORK.                      */
+ * worker()  —  non-zero ranks: request tasks and process them
+ */
 static void worker(void)
 {
     MPI_Status st;
@@ -200,10 +199,9 @@ static void worker(void)
 
         if (st.MPI_TAG == TAG_WORK) {
             Task t;
-            MPI_Recv(&t, sizeof(Task)/sizeof(int), MPI_INT, 0,
-                     TAG_WORK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            recv_task(&t, 0);
             dfs_from_task(&t);
-        } else {    /* TAG_NOWORK → nothing left -> exit loop ------- */
+        } else {
             MPI_Recv(NULL, 0, MPI_BYTE, 0, TAG_NOWORK,
                      MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             break;
@@ -212,46 +210,64 @@ static void worker(void)
 }
 
 /* --------------------------------------------------------------------
- * read_distance_file()  —  supports both full and triangular formats. */
+ * read_distance_file()  —  supports both full and triangular formats
+ */
 static void read_distance_file(const char *fname)
 {
     FILE *fp = fopen(fname, "r");
     if (!fp) { perror("open dist file"); MPI_Abort(MPI_COMM_WORLD, 1); }
 
-    if (fscanf(fp, "%d", &N) != 1 || N > MAX_N) {
-        fprintf(stderr, "bad N in file\n");
+    if (fscanf(fp, "%d", &N) != 1 || N > MAX_N || N <= 0) {
+        fprintf(stderr, "Invalid N=%d in file (must be 1-%d)\n", N, MAX_N);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    /* read up to MAX_N² ints into scratch array ------------------- */
+    /* Initialize distance matrix to 0 */
+    memset(dist, 0, sizeof(dist));
+
+    /* read distance data */
     int nums[MAX_N * MAX_N];
     int cnt = 0;
-    while (cnt < MAX_N * MAX_N &&
-           fscanf(fp, "%d", &nums[cnt]) == 1) ++cnt;
+    while (cnt < MAX_N * MAX_N && fscanf(fp, "%d", &nums[cnt]) == 1) ++cnt;
     fclose(fp);
 
-    const int needSquare = N * N;              /* full matrix ints   */
-    const int needTri    = N * (N - 1) / 2;    /* upper-triangular   */
+    const int needSquare = N * N;
+    const int needTri    = N * (N - 1) / 2;
 
-    if (cnt == needSquare) {                   /* square ---------- */
+    if (cnt == needSquare) {
+        /* square matrix */
         for (int i = 0, k = 0; i < N; ++i)
             for (int j = 0; j < N; ++j)
                 dist[i][j] = nums[k++];
-    } else if (cnt == needTri) {               /* triangular ------ */
+    } else if (cnt == needTri) {
+        /* triangular matrix */
         int k = 0;
-        for (int i = 1; i < N; ++i)
+        for (int i = 1; i < N; ++i) {
             for (int j = 0; j < i; ++j) {
                 dist[i][j] = dist[j][i] = nums[k++];
             }
-        for (int i = 0; i < N; ++i) dist[i][i] = 0;
-    } else {                                   /* unsupported ----- */
-        fprintf(stderr, "unsupported format (%d ints read)\n", cnt);
+        }
+        /* diagonal is 0 (already set by memset) */
+    } else {
+        fprintf(stderr, "Unsupported format: %d ints read, need %d (square) or %d (triangular)\n", 
+                cnt, needSquare, needTri);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
+
+    /* Debug: print first few distances */
+    /*
+    printf("Distance matrix preview:\n");
+    for (int i = 0; i < (N < 5 ? N : 5); i++) {
+        for (int j = 0; j < (N < 5 ? N : 5); j++) {
+            printf("%3d ", dist[i][j]);
+        }
+        printf("\n");
+    }
+    */
 }
 
 /* ====================================================================
- *  main()  —  initialise MPI, load data, launch master/worker, gather.
+ *  main()
  * ====================================================================*/
 int main(int argc, char **argv)
 {
@@ -261,37 +277,78 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world);
 
-    /* -------- validate CLI -------------------------------------- */
+    /* validate CLI */
     if (argc != 2) {
         if (rank == 0)
             fprintf(stderr, "usage: %s <distance-file>\n", argv[0]);
-        MPI_Finalize(); return 1;
+        MPI_Finalize(); 
+        return 1;
     }
 
-    /* -------- read & broadcast distance matrix ------------------ */
+    /* read & broadcast distance matrix */
     if (rank == 0) read_distance_file(argv[1]);
 
     MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(dist, MAX_N * MAX_N, MPI_INT, 0, MPI_COMM_WORLD);
 
-    /* -------- branch-and-bound search --------------------------- */
+    /* initialize best solution */
     best_cost = INT_MAX;
-    double t0 = wall_seconds();
+    memset(best_path, 0, sizeof(best_path));
 
+    double t0 = MPI_Wtime();
+
+    /* run search */
     if (rank == 0) master(world);
     else           worker();
 
-    /* -------- gather global optimum ----------------------------- */
+    /* gather global optimum AFTER all work is done */
     int global_best;
-    MPI_Reduce(&best_cost, &global_best, 1, MPI_INT,
-               MPI_MIN, 0, MPI_COMM_WORLD);
+    int best_path_to_print[MAX_PATH + 1];
+    
+    if (world > 1) {
+        MPI_Reduce(&best_cost, &global_best, 1, MPI_INT, MPI_MIN, 0, MPI_COMM_WORLD);
+        
+        /* Simple path collection using safe communication */
+        if (rank == 0) {
+            memcpy(best_path_to_print, best_path, (N + 1) * sizeof(int));
+            
+            /* Check if any worker has the optimal solution */
+            for (int src = 1; src < world; src++) {
+                int worker_cost;
+                int worker_path[MAX_PATH + 1];
+                
+                MPI_Recv(&worker_cost, 1, MPI_INT, src, TAG_COST, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                MPI_Recv(worker_path, N + 1, MPI_INT, src, TAG_PATH, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                
+                if (worker_cost == global_best) {
+                    memcpy(best_path_to_print, worker_path, (N + 1) * sizeof(int));
+                }
+            }
+        } else {
+            /* Workers send their results */
+            MPI_Send(&best_cost, 1, MPI_INT, 0, TAG_COST, MPI_COMM_WORLD);
+            MPI_Send(best_path, N + 1, MPI_INT, 0, TAG_PATH, MPI_COMM_WORLD);
+        }
+    } else {
+        global_best = best_cost;
+        memcpy(best_path_to_print, best_path, (N + 1) * sizeof(int));
+    }
 
-    double t1 = wall_seconds();
+    double t1 = MPI_Wtime();
 
     if (rank == 0) {
         printf("Optimal tour cost: %d   time: %.3f s   ranks: %d\n",
                global_best, t1 - t0, world);
-        /* Optional: print tour path here if desired */
+        
+        if (global_best < INT_MAX) {
+            printf("Optimal path: ");
+            for (int i = 0; i <= N; i++) {
+                printf("%d ", best_path_to_print[i]);
+            }
+            printf("\n");
+        } else {
+            printf("No solution found!\n");
+        }
     }
 
     MPI_Finalize();
