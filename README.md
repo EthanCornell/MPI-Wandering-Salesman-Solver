@@ -2,7 +2,7 @@
 
 > **Author:** I-Hsuan (Ethan) Huang  
 > **Tech:** C · MPI (message-passing model) · OpenMP · branch-and-bound search  
-> **Fun fact:** v4 hybrid solver beats the original by **670×** on dist18 (245s → 0.37s).
+> **Fun fact:** v4 hybrid solver beats the original by **635×** on dist18 (245s → 0.37s).
 
 ---
 
@@ -178,7 +178,7 @@ Malformed input aborts with a clear message.
 | **v1** | 245.9 | 1.0× |
 | **v2** | 118.9 | 2.1× |
 | **v3** | 4.33 | 56.8× |
-| **v4** | 0.37 | **670×** |
+| **v4** | 0.37 | **635×** |
 
 ### 6.3 Multi-rank scaling (v4, dist17)
 
